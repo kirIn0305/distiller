@@ -8,6 +8,12 @@ quantizers:
     ema_decay: 0.999   # Decay value for exponential moving average tracking of activation ranges
     per_channel_wts: True
 
+lr_schedulers:
+  training_lr:
+    class: MultiStepLR
+    milestones: [60, 120]
+    gammas: 0.1
+
 policies:
     - quantizer:
         instance_name: linear_quantizer
@@ -15,4 +21,10 @@ policies:
       # pre-trained checkpoint at some unknown epoch
       starting_epoch: 0
       ending_epoch: 300
+      frequency: 1
+
+    - lr_scheduler:
+        instance_name: training_lr
+      starting_epoch: 0
+      ending_epoch: 121
       frequency: 1

@@ -27,8 +27,10 @@ import distiller.utils
 from .quantizer import Quantizer
 from .q_utils import *
 import distiller.modules
-from range_linear import LinearQuantMode
-from range_linear import verify_mode
+from .range_linear import LinearQuantMode
+from .range_linear import verify_mode
+from .range_linear import update_ema
+from .range_linear import inputs_quantize_wrapped_forward
 
 
 class ShiftQuantMode(Enum):
@@ -51,25 +53,25 @@ def _bit_shift_quantization_params(scale, mode):
     scale_shift = torch.pow(2, shift_k)
     return scale_shift
 
-def _get_quant_shift_params_from_tensor(tensor, num_bits, range_mode, shift_mode, clip=False, per_channel=False):
+def _get_quant_shift_params_from_tensor(tensor, num_bits, linear_mode, shift_mode, clip=False, per_channel=False):
     if per_channel and tensor.dim() not in [2, 4]:
         raise ValueError('Per channel quantization possible only with 2D or 4D tensors (linear or conv layer weights)')
     dim = 0 if clip or per_channel else None
-    if range_mode == LinearQuantMode.SYMMETRIC:
+    if linear_mode == LinearQuantMode.SYMMETRIC:
         sat_fn = get_tensor_avg_max_abs if clip else get_tensor_max_abs
         sat_val = sat_fn(tensor, dim)
-        scale, zp = symmetric_linear_quantization_params(num_bits, sat_val)
+        scale_f, zp = symmetric_linear_quantization_params(num_bits, sat_val)
     else:   # Asymmetric mode
         sat_fn = get_tensor_avg_min_max if clip else get_tensor_min_max
         sat_min, sat_max = sat_fn(tensor, dim)
-        signed = range_mode == LinearQuantMode.ASYMMETRIC_SIGNED
-        scale, zp = asymmetric_linear_quantization_params(num_bits, sat_min, sat_max, signed=signed)
+        signed = linear_mode == LinearQuantMode.ASYMMETRIC_SIGNED
+        scale_f, zp = asymmetric_linear_quantization_params(num_bits, sat_min, sat_max, signed=signed)
 
-    scale_shift = _bit_shift_quantization_params(scale, shift_mode)
+    scale_shift = _bit_shift_quantization_params(scale_f, shift_mode)
 
     if per_channel:
         # Reshape scale and zero_points so they can be broadcast properly with the weight tensor
-        dims = [scale.shape[0]] + [1] * (tensor.dim() - 1)
+        dims = [scale_shift.shape[0]] + [1] * (tensor.dim() - 1)
         scale_shift = scale_shift.view(dims)
         zp = zp.view(dims)
 
@@ -77,7 +79,7 @@ def _get_quant_shift_params_from_tensor(tensor, num_bits, range_mode, shift_mode
 
 
 class FakeShiftQuantization(nn.Module):
-    def __init__(self, num_bits=8, linar_mode=LinearQuantMode.SYMMETRIC, shift_mode=ShiftQuantMod.CEIL, ema_decay=0.999, dequantize=True, inplace=False):
+    def __init__(self, num_bits=8, linear_mode=LinearQuantMode.SYMMETRIC, shift_mode=ShiftQuantMode.CEIL, ema_decay=0.999, dequantize=True, inplace=False):
         super(FakeShiftQuantization, self).__init__()
 
         self.num_bits = num_bits
@@ -122,17 +124,17 @@ class FakeShiftQuantization(nn.Module):
             max_abs = max(abs(self.tracked_min), abs(self.tracked_max))
             actual_min, actual_max = -max_abs, max_abs
             if self.training:
-                scale.data, self.zero_point.data = symmetric_linear_quantization_params(self.num_bits, max_abs)
+                self.scale.data, self.zero_point.data = symmetric_linear_quantization_params(self.num_bits, max_abs)
         else:
             actual_min, actual_max = self.tracked_min, self.tracked_max
             signed = self.mode == LinearQuantMode.ASYMMETRIC_SIGNED
             if self.training:
-                scale.data, self.zero_point.data = asymmetric_linear_quantization_params(self.num_bits,
+                self.scale.data, self.zero_point.data = asymmetric_linear_quantization_params(self.num_bits,
                                                                                               self.tracked_min,
                                                                                               self.tracked_max,
                                                                                               signed=signed)
 
-        self.scale.data = _bit_shift_quantization_params(scale, self.shift_mode)
+        self.scale.data = _bit_shift_quantization_params(self.scale.data, self.shift_mode)
 
         input = clamp(input, actual_min.item(), actual_max.item(), False)
         input = LinearQuantizeSTE.apply(input, self.scale, self.zero_point, self.dequantize, False)
@@ -145,10 +147,10 @@ class FakeShiftQuantization(nn.Module):
 
 
 class FakeShiftQuantizationWrapper(nn.Module):
-    def __init__(self, wrapped_module, num_bits, quant_mode, ema_decay):
+    def __init__(self, wrapped_module, num_bits, linear_mode, shift_mode, ema_decay):
         super(FakeShiftQuantizationWrapper, self).__init__()
         self.wrapped_module = wrapped_module
-        self.fake_q = FakeShiftQuantization(num_bits, quant_mode, ema_decay, dequantize=True,
+        self.fake_q = FakeShiftQuantization(num_bits, linear_mode, shift_mode, ema_decay, dequantize=True,
                                              inplace=getattr(wrapped_module, 'inplace', False))
 
     def forward(self, *input):
@@ -158,7 +160,7 @@ class FakeShiftQuantizationWrapper(nn.Module):
 
 class QuantAwareTrainShiftLinearQuantizer(Quantizer):
     def __init__(self, model, optimizer=None, bits_activations=32, bits_weights=32, bits_overrides=None,
-                 quantize_bias=True, linear_mode=LinearQuantMode.SYMMETRIC, shift_mode=ShiftQuantMod.CEIL, ema_decay=0.999, per_channel_wts=False,
+                 quantize_bias=True, linear_mode=LinearQuantMode.SYMMETRIC, shift_mode=ShiftQuantMode.CEIL, ema_decay=0.999, per_channel_wts=False,
                  quantize_inputs=True, num_bits_inputs=None):
         super(QuantAwareTrainShiftLinearQuantizer, self).__init__(model, optimizer=optimizer,
                                                                   bits_activations=bits_activations,
@@ -236,7 +238,7 @@ class QuantAwareTrainShiftLinearQuantizer(Quantizer):
             param_fp = getattr(m, ptq.fp_attr_name)
             perch = not isinstance(m, nn.Embedding) and self.per_channel_wts and param_fp.dim() in [2, 4]
             with torch.no_grad():
-                scale, zero_point = _get_quant_params_from_tensor(param_fp, ptq.num_bits, self.mode,
-                                                                  per_channel=perch)
+                scale, zero_point = _get_quant_shift_params_from_tensor(param_fp, ptq.num_bits, self.linear_mode,
+                                                                        self.shift_mode, per_channel=perch)
             m.register_buffer(ptq.q_attr_name + '_scale', torch.ones_like(scale))
             m.register_buffer(ptq.q_attr_name + '_zero_point', torch.zeros_like(zero_point))
