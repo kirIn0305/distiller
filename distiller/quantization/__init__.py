@@ -19,7 +19,9 @@ from .range_linear import RangeLinearQuantWrapper, RangeLinearQuantParamLayerWra
     LinearQuantMode, QuantAwareTrainRangeLinearQuantizer, add_post_train_quant_args,\
     RangeLinearQuantConcatWrapper, RangeLinearQuantEltwiseAddWrapper, RangeLinearQuantEltwiseMultWrapper
 from .clipped_linear import LinearQuantizeSTE, ClippedLinearQuantization, WRPNQuantizer, DorefaQuantizer, PACTQuantizer
+from .shift_linear import QuantAwareTrainShiftLinearQuantizer
 
 del quantizer
 del range_linear
 del clipped_linear
+del shift_linear
