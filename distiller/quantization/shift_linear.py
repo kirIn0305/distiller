@@ -127,7 +127,7 @@ class FakeShiftQuantization(nn.Module):
                 self.scale.data, self.zero_point.data = symmetric_linear_quantization_params(self.num_bits, max_abs)
         else:
             actual_min, actual_max = self.tracked_min, self.tracked_max
-            signed = self.mode == LinearQuantMode.ASYMMETRIC_SIGNED
+            signed = self.linear_mode == LinearQuantMode.ASYMMETRIC_SIGNED
             if self.training:
                 self.scale.data, self.zero_point.data = asymmetric_linear_quantization_params(self.num_bits,
                                                                                               self.tracked_min,
@@ -135,6 +135,7 @@ class FakeShiftQuantization(nn.Module):
                                                                                               signed=signed)
 
         self.scale.data = _bit_shift_quantization_params(self.scale.data, self.shift_mode)
+
 
         input = clamp(input, actual_min.item(), actual_max.item(), False)
         input = LinearQuantizeSTE.apply(input, self.scale, self.zero_point, self.dequantize, False)
