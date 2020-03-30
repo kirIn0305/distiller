@@ -80,6 +80,8 @@ def save_checkpoint(epoch, arch, model, optimizer=None, scheduler=None,
         checkpoint['thinning_recipes'] = model.thinning_recipes
     if hasattr(model, 'quantizer_metadata'):
         checkpoint['quantizer_metadata'] = model.quantizer_metadata
+    if hasattr(model, 'transformer_metadata'):
+        checkpoint['transformer_metadata'] = model.transformer_metadata
 
     checkpoint['extras'] = extras
     torch.save(checkpoint, fullpath)
@@ -217,6 +219,12 @@ def load_checkpoint(model, chkpt_file, optimizer=None,
             msglogger.warning("Found thinning_recipes key, but missing key compression_scheduler")
             compression_scheduler = distiller.CompressionScheduler(model)
         _load_and_execute_thinning_recipes()
+
+    if 'transformer_metadata' in checkpoint:
+        msglogger.info('Loaded transformer metadata from the checkpoint')
+        tmd = checkpoint['transformer_metadata']
+        transformer = tmd['type'](model, **tmd['params'])
+        transformer.prepare_model(tmd['dummy_input'])
 
     if 'quantizer_metadata' in checkpoint:
         msglogger.info('Loaded quantizer metadata from the checkpoint')

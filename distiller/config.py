@@ -43,6 +43,7 @@ from distiller.pruning import *
 from distiller.regularization import *
 from distiller.learning_rate import *
 from distiller.quantization import *
+from distiller.transformation import *
 from distiller.utils import filter_kwargs
 
 msglogger = logging.getLogger()
@@ -57,6 +58,7 @@ def dict_config(model, optimizer, sched_dict, scheduler=None, resumed_epoch=None
 
     pruners = __factory('pruners', model, sched_dict)
     regularizers = __factory('regularizers', model, sched_dict)
+    transformers = __factory('transformers', model, sched_dict, optimizer=optimizer)
     quantizers = __factory('quantizers', model, sched_dict, optimizer=optimizer)
     if len(quantizers) > 1:
         raise ValueError("\nError: Multiple Quantizers not supported")
@@ -85,6 +87,12 @@ def dict_config(model, optimizer, sched_dict, scheduler=None, resumed_epoch=None
                     policy = distiller.RegularizationPolicy(regularizer)
                 else:
                     policy = distiller.RegularizationPolicy(regularizer, **args)
+
+            elif 'transformer' in policy_def:
+                instance_name, args = __policy_params(policy_def, 'transformer')
+                assert instance_name in transformers, "Transformer {} was not defined in the list of transformers".format(instance_name)
+                transformer = transformers[instance_name]
+                policy = distiller.TransformationPolicy(transformer)
 
             elif 'quantizer' in policy_def:
                 instance_name, args = __policy_params(policy_def, 'quantizer')

@@ -20,6 +20,7 @@
 - RegularizationPolicy: regulization scheduling
 - LRPolicy: learning-rate decay scheduling
 - QuantizationPolicy: quantization scheduling
+- TransformationPolicy: model transform scheduling
 """
 import torch
 import torch.nn as nn
@@ -29,7 +30,7 @@ import logging
 import distiller
 
 
-__all__ = ['PruningPolicy', 'RegularizationPolicy', 'QuantizationPolicy', 'LRPolicy', 'ScheduledTrainingPolicy',
+__all__ = ['PruningPolicy', 'RegularizationPolicy', 'QuantizationPolicy', 'TransformationPolicy', 'LRPolicy', 'ScheduledTrainingPolicy',
            'PolicyLoss', 'LossComponent']
 
 msglogger = logging.getLogger()
@@ -325,3 +326,10 @@ class QuantizationPolicy(ScheduledTrainingPolicy):
         # After parameters update, quantize the parameters again
         # (Doing this here ensures the model parameters are quantized at training completion (and at validation time)
         self.quantizer.quantize_params()
+
+
+class TransformationPolicy(ScheduledTrainingPolicy):
+    def __init__(self, transformer):
+        super(TransformationPolicy, self).__init__()
+        self.transformer = transformer
+        self.transformer.prepare_model()
